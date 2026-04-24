@@ -1,0 +1,6 @@
+# Blocca accesso diretto a tutti i file PHP tranne mitstake-agent.php
+# (che è già protetto da WordPress che non lo chiama direttamente)
+<FilesMatch "\.php$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>

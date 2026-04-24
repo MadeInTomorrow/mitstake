@@ -1,0 +1,5 @@
+# ZIP generati da build-plugin.sh
+*.zip
+
+# Configurazioni sito-specifiche con credenziali
+mitstake-agent/config.php
