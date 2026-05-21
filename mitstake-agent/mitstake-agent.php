@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.0.1
+ * Version:     1.0.2
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake

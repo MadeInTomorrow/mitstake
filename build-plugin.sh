@@ -61,13 +61,13 @@ cat > "$TMP_DIR/mitstake-agent/config.php" <<PHP
 
 defined('ABSPATH') || exit;
 
-define('EHA_SITE_ID',  '${SITE_ID}');
-define('EHA_HUB_URL',  '${HUB_URL}');
-define('EHA_API_KEY',  '${API_KEY}');
-define('EHA_COOLDOWN', 60);
-define('EHA_MAX_LOG_LINES', 100);
-define('EHA_MAX_SOURCE_FILES', 10);
-define('EHA_CURL_TIMEOUT', 30);
+defined('EHA_SITE_ID')          || define('EHA_SITE_ID',          '${SITE_ID}');
+defined('EHA_HUB_URL')          || define('EHA_HUB_URL',          '${HUB_URL}');
+defined('EHA_API_KEY')          || define('EHA_API_KEY',          '${API_KEY}');
+defined('EHA_COOLDOWN')         || define('EHA_COOLDOWN',         60);
+defined('EHA_MAX_LOG_LINES')    || define('EHA_MAX_LOG_LINES',    100);
+defined('EHA_MAX_SOURCE_FILES') || define('EHA_MAX_SOURCE_FILES', 10);
+defined('EHA_CURL_TIMEOUT')     || define('EHA_CURL_TIMEOUT',     30);
 PHP
 
 # Rimuove config-example.php dallo ZIP finale (non serve al sito)
