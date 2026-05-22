@@ -63,39 +63,55 @@ wp-config.php | .env | .env.local | .env.production | config.php
 Il filtro è in `BLOCKED_FILES` (array di costante privata) + regex su basename.
 Se aggiungi nuovi file da includere, assicurati che passino entrambi i controlli.
 
+### 9. SSRF (sanitizeSettings)
+`EHA_HUB_URL` viene validata contro indirizzi IP privati e loopback in
+`sanitizeSettings()` tramite `gethostbyname()` + regex. Non rimuovere mai
+questo controllo. Pattern bloccati: `127.x`, `10.x`, `172.16-31.x`,
+`192.168.x`, `169.254.x`.
+
+### 10. Redazione URI (B-1 esteso)
+`redactUri()` oscura query param sensibili, JWT nei path e token in segmenti
+tipici di magic link (`/verify/`, `/reset/`, ecc.). Non usare URI raw senza
+passare per questa funzione.
+
 ### 2. Redazione URI (B-1)
 Qualsiasi URI che viene loggato o incluso in un payload deve passare per
 `self::redactUri()`. I parametri oscurati sono: `token`, `key`, `pass`,
-`secret`, `auth`, `api_key`, `nonce` (case-insensitive).
+`secret`, `auth`, `api_key`, `nonce` (case-insensitive), più JWT nel path
+e token in segmenti di magic link (`/verify/`, `/reset/`, ecc.).
 Non aggiungere URI raw a report o log senza questa funzione.
 
 ### 3. HTTPS obbligatorio
 `EHA_HUB_URL` deve iniziare con `https://`. Se non lo fa, il plugin si
 auto-disabilita. Non rimuovere mai questo controllo.
-
-### 4. Verifica TLS
 `sslverify: true` (WP) e `CURLOPT_SSL_VERIFYHOST: 2` / `CURLOPT_SSL_VERIFYPEER: true`
 (cURL) devono rimanere abilitati. Non disabilitare mai la verifica certificati.
 
 ### 5. Path traversal (C-1 esteso)
 Ogni file sorgente da includere nello ZIP deve essere validato con `realpath()`
-e verificato che il path risultante inizi con `ABSPATH`. Non includere mai file
-al di fuori della webroot WordPress.
+e verificato che il path risultante inizi con `realpath(ABSPATH) . '/'` (slash
+finale incluso — senza slash il check è bypassabile con directory adiacenti come
+`/var/www/html-staging/`). Non includere mai file al di fuori della webroot WordPress.
+Stessa logica applicata in `extractPhpFiles()` prima del filtro.
 
 ### 6. Cooldown anti-flood (B-2)
-Il meccanismo di cooldown (`checkCooldown` / `updateCooldown`) deve essere
-controllato **sempre** prima di costruire o inviare qualsiasi report. Non
-aggiungere percorsi di codice che saltino il cooldown.
+Il meccanismo di cooldown è gestito da `checkAndUpdateCooldown()` in un'unica
+operazione atomica (check + update). Non spezzare mai le due operazioni. Il
+fallback file-based usa `flock(LOCK_EX)` per evitare race condition in ambienti
+concorrenti. La chiave di lookup è sempre `md5(EHA_SITE_ID . EHA_API_KEY)` sia
+per i transient che per il file.
 
 ### 7. EHA_SEND_WP_USER
 Il default è `false`. Qualsiasi codice che legge dati identificativi dell'utente
 WP (ID, login, email, ruoli) deve essere condizionato da `EHA_SEND_WP_USER === true`.
 
 ### 8. API key nell'UI
-La API key non deve mai essere mostrata in chiaro nell'interfaccia admin.
-Usare il campo `type="password"` con mascheratura degli ultimi 8 caratteri.
-L'hidden field `_existing_api_key` preserva la chiave se il campo viene
-lasciato vuoto; sanitizzare sempre con `sanitize_text_field`.
+La API key non deve mai essere mostrata in chiaro nell'interfaccia admin e **non
+deve mai essere inclusa in un campo hidden** nel form (un XSS in qualsiasi
+altro plugin potrebbe leggerla). Usare il campo `type="password"` con mascheratura
+degli ultimi 4 caratteri. La logica di preservazione della chiave esistente si
+applica esclusivamente in `sanitizeSettings()` leggendo `$existing['api_key']`
+direttamente dal DB (`get_option`), mai dall'input `$_POST`.
 
 ---
 

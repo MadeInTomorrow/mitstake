@@ -150,11 +150,10 @@ class MiTstakeAgent
         int    $line,
         string $trace = ''
     ): void {
-        if (!self::checkCooldown()) {
+        if (!self::checkAndUpdateCooldown()) {
             error_log('[MiTstakeAgent] Cooldown attivo — errore non inviato.');
             return;
         }
-        self::updateCooldown();
 
         $logLine  = self::buildLogLine($message);
         $zipData  = self::buildZip($message, $file, $line, $trace);
@@ -172,11 +171,25 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     private static function redactUri(string $uri): string
     {
-        return preg_replace_callback(
+        // B-1: oscura query param sensibili
+        $uri = preg_replace_callback(
             '/([?&])(token|key|pass|secret|auth|api_?key|nonce)=([^&\s#]*)/i',
             static fn($m) => $m[1] . $m[2] . '=[REDACTED]',
             $uri
         ) ?? $uri;
+        // B-1: oscura JWT nei segmenti di path
+        $uri = preg_replace(
+            '/\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b/',
+            '[JWT-REDACTED]',
+            $uri
+        ) ?? $uri;
+        // B-1: oscura token in path di magic link, reset password, verify, ecc.
+        $uri = preg_replace(
+            '#/(verify|reset|confirm|auth|activate|token|magic|unsubscribe)/([A-Za-z0-9_\-]{16,})#i',
+            '/$1/[REDACTED]',
+            $uri
+        ) ?? $uri;
+        return $uri;
     }
 
     // -----------------------------------------------------------------------
@@ -212,11 +225,15 @@ class MiTstakeAgent
             return null;
         }
 
-        $tmpBase = tempnam(sys_get_temp_dir(), 'eha_');
-        $tmpZip  = $tmpBase . '.zip';
-        $zip     = new ZipArchive();
+        // Usa una directory temporanea dedicata per evitare TOCTOU su file condivisi in /tmp
+        $tmpDir = sys_get_temp_dir() . '/eha_' . bin2hex(random_bytes(8));
+        if (!mkdir($tmpDir, 0700, true)) {
+            return null;
+        }
+        $tmpZip = $tmpDir . '/report.zip';
+        $zip    = new ZipArchive();
         if ($zip->open($tmpZip, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-            @unlink($tmpBase);
+            rmdir($tmpDir);
             return null;
         }
 
@@ -267,7 +284,8 @@ class MiTstakeAgent
             array_unshift($phpFiles, $errorFile);
             $phpFiles = array_unique($phpFiles);
         }
-        $webRoot    = defined('ABSPATH') ? rtrim(ABSPATH, '/') : '';
+        // C-1: usa realpath su ABSPATH per evitare bypass via prefix match su directory adiacenti
+        $webRoot    = defined('ABSPATH') ? rtrim((string)(realpath(ABSPATH) ?: ABSPATH), '/') : '';
         $addedCount = 0;
         foreach ($phpFiles as $srcPath) {
             if ($addedCount >= EHA_MAX_SOURCE_FILES) {
@@ -278,7 +296,7 @@ class MiTstakeAgent
             if ($realSrc === false) {
                 continue;
             }
-            if ($webRoot !== '' && strpos($realSrc, $webRoot) !== 0) {
+            if ($webRoot !== '' && strpos($realSrc, $webRoot . '/') !== 0) {
                 continue;
             }
             // C-1: blocca file con credenziali o chiavi segrete
@@ -304,15 +322,15 @@ class MiTstakeAgent
 
         $zip->close();
 
-        // Cancella il file base lasciato da tempnam
-        @unlink($tmpBase);
-
-        // Leggi il file e cancellalo
+        // Leggi il file e cancella la directory temporanea
         if (!is_readable($tmpZip)) {
+            @unlink($tmpZip);
+            rmdir($tmpDir);
             return null;
         }
         $data = file_get_contents($tmpZip);
         unlink($tmpZip);
+        rmdir($tmpDir);
 
         if ($data === false || strlen($data) > EHA_MAX_ZIP_BYTES) {
             return null;
@@ -329,7 +347,7 @@ class MiTstakeAgent
         $lines    = EHA_MAX_LOG_LINES;
         $handle   = @fopen($path, 'rb');
         if (!$handle) {
-            return "[file non leggibile: {$path}]";
+            return '[log non disponibile]';
         }
         fseek($handle, 0, SEEK_END);
         $size   = ftell($handle);
@@ -350,11 +368,19 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     private static function extractPhpFiles(string $trace): array
     {
-        $webRoot  = defined('ABSPATH') ? rtrim(ABSPATH, '/') : '/var/www/html';
-        $pattern  = '/(?:in |(?:PHP\s+\d+\.\s+\S+\(\)\s+))(\/[^\s:]+\.php)/';
+        // C-1: usa realpath su ABSPATH per evitare bypass via prefix match su directory adiacenti
+        $webRoot = defined('ABSPATH') ? rtrim((string)(realpath(ABSPATH) ?: ABSPATH), '/') : '/var/www/html';
+        $pattern = '/(?:in |(?:PHP\s+\d+\.\s+\S+\(\)\s+))(\/[^\s:]+\.php)/';
         preg_match_all($pattern, $trace, $matches);
-        $files = array_unique($matches[1] ?? []);
-        return array_filter($files, fn($f) => strpos($f, $webRoot) === 0);
+        $candidates = array_unique($matches[1] ?? []);
+        $files = [];
+        foreach ($candidates as $f) {
+            $real = realpath($f);
+            if ($real !== false && strpos($real, $webRoot . '/') === 0) {
+                $files[] = $real;
+            }
+        }
+        return $files;
     }
 
     // -----------------------------------------------------------------------
@@ -446,7 +472,15 @@ class MiTstakeAgent
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
         ]);
-        curl_exec($ch);
+        $result = curl_exec($ch);
+        if ($result === false) {
+            error_log('[MiTstakeAgent] cURL errore invio: ' . curl_error($ch));
+        } else {
+            $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($httpCode && $httpCode !== 200 && $httpCode !== 201) {
+                error_log('[MiTstakeAgent] Hub ha risposto HTTP ' . $httpCode);
+            }
+        }
         curl_close($ch);
     }
 
@@ -490,28 +524,46 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     // Cooldown: usa la transient API di WP se disponibile, altrimenti file
     // -----------------------------------------------------------------------
-    private static function checkCooldown(): bool
+    /**
+     * Verifica e aggiorna il cooldown in un'unica operazione atomica (B-2).
+     * Ritorna true se è consentito inviare, false se il cooldown è ancora attivo.
+     */
+    private static function checkAndUpdateCooldown(): bool
     {
+        $cdKey = md5(EHA_SITE_ID . EHA_API_KEY);
+
         if (function_exists('get_transient')) {
-            // B-2: nome del transient non prevedibile senza conoscere la API key
-            return !get_transient('eha_cd_' . md5(EHA_SITE_ID . EHA_API_KEY));
-        }
-        // Fallback file
-        $f = sys_get_temp_dir() . '/eha_cooldown_' . md5(EHA_SITE_ID);
-        if (!file_exists($f)) {
+            // B-2: chiave non prevedibile senza conoscere la API key
+            if (get_transient('eha_cd_' . $cdKey)) {
+                return false;
+            }
+            set_transient('eha_cd_' . $cdKey, 1, EHA_COOLDOWN);
             return true;
         }
-        return (time() - (int) file_get_contents($f)) >= EHA_COOLDOWN;
-    }
 
-    private static function updateCooldown(): void
-    {
-        if (function_exists('set_transient')) {
-            set_transient('eha_cd_' . md5(EHA_SITE_ID . EHA_API_KEY), 1, EHA_COOLDOWN);
-            return;
+        // Fallback file con lock esclusivo per evitare race condition (B-2)
+        $f  = sys_get_temp_dir() . '/eha_cooldown_' . $cdKey;
+        $fh = @fopen($f, 'c+');
+        if (!$fh) {
+            return false;
         }
-        $f = sys_get_temp_dir() . '/eha_cooldown_' . md5(EHA_SITE_ID);
-        file_put_contents($f, (string) time());
+        if (!flock($fh, LOCK_EX)) {
+            fclose($fh);
+            return false;
+        }
+        $content = (string) fread($fh, 20);
+        $ts      = is_numeric(trim($content)) ? (int) trim($content) : 0;
+        if ($ts && (time() - $ts) < EHA_COOLDOWN) {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+            return false;
+        }
+        ftruncate($fh, 0);
+        rewind($fh);
+        fwrite($fh, (string) time());
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        return true;
     }
 
     // =========================================================================
@@ -664,17 +716,14 @@ class MiTstakeAgent
             // Campo separato: inserisci solo per cambiare la chiave
             // La chiave esistente è preservata da un hidden field se il campo viene lasciato vuoto
             $masked = $value
-                ? str_repeat('•', max(0, strlen($value) - 8)) . substr($value, -8)
+                ? str_repeat('•', max(4, strlen($value) - 4)) . substr($value, -4)
                 : '';
             printf(
                 '<input type="password" name="eha_settings[api_key]" value="" class="regular-text" autocomplete="new-password" placeholder="%s">',
                 $value ? 'Lascia vuoto per mantenere la chiave attuale' : 'Incolla qui la API key'
             );
-            // Hidden field che preserva la chiave esistente se il campo viene lasciato vuoto
-            printf(
-                '<input type="hidden" name="eha_settings[_existing_api_key]" value="%s">',
-                esc_attr($value)
-            );
+            // Nota: la chiave esistente NON viene mai esposta in un campo hidden (rischio XSS da altri plugin).
+            // La logica di preservazione è gestita interamente in sanitizeSettings() dal valore nel DB.
             if ($masked) {
                 echo '<p class="description">Chiave attuale: <code>' . esc_html($masked) . '</code></p>';
             }
@@ -704,13 +753,25 @@ class MiTstakeAgent
             add_settings_error('eha_settings', 'hub_url_https', 'Hub URL deve usare HTTPS.', 'error');
             $hub_url = $existing['hub_url'] ?? '';
         }
+        // Blocca SSRF: rifiuta URL puntanti a indirizzi IP privati o di loopback
+        if ($hub_url) {
+            $host   = (string) parse_url($hub_url, PHP_URL_HOST);
+            $parsed = $host ? gethostbyname($host) : '';
+            if ($parsed && preg_match(
+                '/^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.)/',
+                $parsed
+            )) {
+                add_settings_error('eha_settings', 'hub_url_ssrf', 'Hub URL non può puntare a un indirizzo privato o di loopback.', 'error');
+                $hub_url = $existing['hub_url'] ?? '';
+            }
+        }
         $clean['hub_url'] = rtrim($hub_url, '/');
 
-        // API key: usa la nuova se compilata, altrimenti preserva l'esistente
+        // API key: usa la nuova se compilata, altrimenti legge esclusivamente dal DB (mai dall'input HTML)
         $new_key = trim($input['api_key'] ?? '');
         $clean['api_key'] = $new_key !== ''
             ? sanitize_text_field($new_key)
-            : sanitize_text_field($input['_existing_api_key'] ?? ($existing['api_key'] ?? ''));
+            : sanitize_text_field($existing['api_key'] ?? '');
 
         $clean['cooldown']         = max(10, (int) ($input['cooldown']         ?? 60));
         $clean['max_log_lines']    = max(10,  min(1000, (int) ($input['max_log_lines']    ?? 100)));
