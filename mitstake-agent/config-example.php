@@ -14,7 +14,7 @@ defined('ABSPATH') || exit;
 define('EHA_SITE_ID', 'nome-del-mio-sito');
 
 // URL dell'hub (senza slash finale)
-define('EHA_HUB_URL', 'https://errorhub.example.com');
+define('EHA_HUB_URL', 'https://hub.mitstake.example.com');
 
 // API key generata dall'hub per questo sito
 define('EHA_API_KEY', 'inserisci-qui-la-tua-api-key');

@@ -53,11 +53,11 @@ defined('EHA_SEND_WP_USER')    || define('EHA_SEND_WP_USER',    false);
 // Pagina impostazioni admin — registrata SEMPRE, anche se la config è incompleta
 // ---------------------------------------------------------------------------
 if (is_admin()) {
-    add_action('admin_menu',    [ErrorHubAgent::class, 'addSettingsPage']);
-    add_action('admin_init',    [ErrorHubAgent::class, 'registerSettings']);
-    add_action('admin_notices', [ErrorHubAgent::class, 'adminNotices']);
+    add_action('admin_menu',    [MiTstakeAgent::class, 'addSettingsPage']);
+    add_action('admin_init',    [MiTstakeAgent::class, 'registerSettings']);
+    add_action('admin_notices', [MiTstakeAgent::class, 'adminNotices']);
     // Aggiornamenti automatici tramite GitHub releases (Update URI header, WP 5.8+)
-    add_filter('update_plugins_github.com', [ErrorHubAgent::class, 'checkForUpdates'], 10, 3);
+    add_filter('update_plugins_github.com', [MiTstakeAgent::class, 'checkForUpdates'], 10, 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -65,27 +65,27 @@ if (is_admin()) {
 // ---------------------------------------------------------------------------
 if (empty(EHA_SITE_ID) || empty(EHA_HUB_URL) || empty(EHA_API_KEY)) {
     // Non bloccare il sito: scrivi solo in log WP
-    error_log('[ErrorHubAgent] Configurazione incompleta: configurare il plugin da Impostazioni > MiTstake Agent.');
+    error_log('[MiTstakeAgent] Configurazione incompleta: configurare il plugin da Impostazioni > MiTstake Agent.');
     return;
 }
 
 // Forza HTTPS per non inviare la API key in chiaro
 if (stripos(EHA_HUB_URL, 'https://') !== 0) {
-    error_log('[ErrorHubAgent] EHA_HUB_URL deve usare HTTPS. Plugin disabilitato.');
+    error_log('[MiTstakeAgent] EHA_HUB_URL deve usare HTTPS. Plugin disabilitato.');
     return;
 }
 
 // ---------------------------------------------------------------------------
 // Registrazione handler errori
 // ---------------------------------------------------------------------------
-register_shutdown_function([ErrorHubAgent::class, 'onShutdown']);
-set_exception_handler([ErrorHubAgent::class, 'onException']);
+register_shutdown_function([MiTstakeAgent::class, 'onShutdown']);
+set_exception_handler([MiTstakeAgent::class, 'onException']);
 
 /**
  * Classe principale del plugin.
  * Usa solo metodi statici per evitare dipendenze dall'ordine di init WP.
  */
-class ErrorHubAgent
+class MiTstakeAgent
 {
     /** Livelli PHP che consideriamo fatali per un 500. */
     private const FATAL_LEVELS = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
@@ -151,7 +151,7 @@ class ErrorHubAgent
         string $trace = ''
     ): void {
         if (!self::checkCooldown()) {
-            error_log('[ErrorHubAgent] Cooldown attivo — errore non inviato.');
+            error_log('[MiTstakeAgent] Cooldown attivo — errore non inviato.');
             return;
         }
         self::updateCooldown();
@@ -160,7 +160,7 @@ class ErrorHubAgent
         $zipData  = self::buildZip($message, $file, $line, $trace);
 
         if ($zipData === null) {
-            error_log('[ErrorHubAgent] Impossibile creare ZIP report.');
+            error_log('[MiTstakeAgent] Impossibile creare ZIP report.');
             return;
         }
 
@@ -208,7 +208,7 @@ class ErrorHubAgent
     ): ?string {
         // Richiede ZipArchive (PHP extension standard)
         if (!class_exists('ZipArchive')) {
-            error_log('[ErrorHubAgent] ZipArchive non disponibile.');
+            error_log('[MiTstakeAgent] ZipArchive non disponibile.');
             return null;
         }
 
@@ -410,14 +410,14 @@ class ErrorHubAgent
         ]);
 
         if (is_wp_error($response)) {
-            error_log('[ErrorHubAgent] Errore invio: ' . $response->get_error_message());
+            error_log('[MiTstakeAgent] Errore invio: ' . $response->get_error_message());
             return;
         }
         $code = wp_remote_retrieve_response_code($response);
         if ($code !== 200 && $code !== 201) {
-            error_log('[ErrorHubAgent] Hub ha risposto HTTP ' . $code . ': ' . wp_remote_retrieve_body($response));
+            error_log('[MiTstakeAgent] Hub ha risposto HTTP ' . $code . ': ' . wp_remote_retrieve_body($response));
         } else {
-            error_log('[ErrorHubAgent] Report inviato con successo (HTTP ' . $code . ').');
+            error_log('[MiTstakeAgent] Report inviato con successo (HTTP ' . $code . ').');
         }
     }
 
@@ -427,7 +427,7 @@ class ErrorHubAgent
     private static function sendViaCurl(string $logLine, string $zipData): void
     {
         if (!function_exists('curl_init')) {
-            error_log('[ErrorHubAgent] cURL non disponibile.');
+            error_log('[MiTstakeAgent] cURL non disponibile.');
             return;
         }
         $boundary = '----EHABoundary' . bin2hex(random_bytes(8));
