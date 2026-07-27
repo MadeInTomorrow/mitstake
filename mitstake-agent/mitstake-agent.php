@@ -133,7 +133,16 @@ class MiTstakeAgent
             $e->getLine(),
             $e->getTraceAsString(),
         );
-        // Mostra la pagina di errore WP standard
+
+        // In contesto REST API (es. batch/v1), wp_die() interferisce con
+        // WP_REST_Server e può causare "Call to undefined method WP_Error::get_method()".
+        // Rilanciamo l'eccezione per lasciare che WordPress la gestisca nativamente.
+        if (defined('REST_REQUEST') && REST_REQUEST) {
+            error_log('[MiTstakeAgent] Eccezione in contesto REST — rilascio a WP_REST_Server: ' . $e->getMessage());
+            throw $e;
+        }
+
+        // Mostra la pagina di errore WP standard (solo per richieste non-REST)
         wp_die(
             esc_html__('Si è verificato un errore. Riprova più tardi.', 'mitstake-agent'),
             esc_html__('Errore', 'mitstake-agent'),
