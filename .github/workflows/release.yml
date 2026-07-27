@@ -2,86 +2,58 @@ name: Release Plugin
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── 1. Legge il messaggio dell'ultimo commit e determina il tipo di bump ──
-      - name: Determine bump type
-        id: bump
-        run: |
-          MSG=$(git log -1 --pretty=%B)
-          echo "Commit message: $MSG"
-          if echo "$MSG" | grep -qE '^feat!:|^feat\(.+\)!:|BREAKING CHANGE'; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -qE '^feat(\(.+\))?:'; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-          elif echo "$MSG" | grep -qE '^fix(\(.+\))?:'; then
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=none" >> "$GITHUB_OUTPUT"
-            echo "Nessun prefisso riconosciuto — nessuna release."
-          fi
-
-      # ── 2. Calcola la nuova versione ─────────────────────────────────────────
-      - name: Compute new version
-        if: steps.bump.outputs.type != 'none'
+      - name: Read plugin version
         id: version
         run: |
-          CURRENT=$(grep -m1 '^\s*\*\s*Version:' mitstake-agent/mitstake-agent.php | grep -oP '[\d.]+')
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          case "${{ steps.bump.outputs.type }}" in
-            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH+1)) ;;
-          esac
-          NEW="$MAJOR.$MINOR.$PATCH"
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "new=$NEW"         >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW"        >> "$GITHUB_OUTPUT"
-          echo "Versione: $CURRENT → $NEW"
+          VERSION="$(sed -n 's/^ \* Version:[[:space:]]*//p' mitstake-agent/mitstake-agent.php | head -n1 | tr -d '\r')"
+          if [[ -z "$VERSION" ]]; then
+            echo "Version non trovata in mitstake-agent/mitstake-agent.php"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      # ── 3. Aggiorna la versione nel file del plugin ───────────────────────────
-      - name: Update version in plugin header
-        if: steps.bump.outputs.type != 'none'
+      - name: Check remote tag
+        id: tagcheck
         run: |
-          sed -i -E \
-            "s/^( \* Version:[[:space:]]+)[0-9]+\.[0-9]+(\.[0-9]+)?/\1${{ steps.version.outputs.new }}/" \
-            mitstake-agent/mitstake-agent.php
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      # ── 4. Committa il bump di versione (con [skip ci] per evitare loop) ──────
-      - name: Commit version bump
-        if: steps.bump.outputs.type != 'none'
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add mitstake-agent/mitstake-agent.php
-          git commit -m "chore: bump version to ${{ steps.version.outputs.new }} [skip ci]"
-          git push
-
-      # ── 5. Build ZIP ──────────────────────────────────────────────────────────
       - name: Build release ZIP
-        if: steps.bump.outputs.type != 'none'
-        run: ./build-plugin.sh --release
-
-      # ── 6. Crea la GitHub Release con il ZIP come asset ──────────────────────
-      - name: Create GitHub Release
-        if: steps.bump.outputs.type != 'none'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: steps.tagcheck.outputs.exists == 'false'
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            mitstake-agent.zip \
-            --title "MiTstake Agent ${{ steps.version.outputs.tag }}" \
-            --generate-notes
+          mkdir -p dist
+          rsync -a ./mitstake-agent/ dist/mitstake-agent/ \
+            --exclude ".git" \
+            --exclude ".github"
+          (cd dist && zip -r "mitstake-agent.zip" "mitstake-agent")
+
+      - name: Create GitHub release
+        if: steps.tagcheck.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: MiTstake Agent ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: dist/mitstake-agent.zip
