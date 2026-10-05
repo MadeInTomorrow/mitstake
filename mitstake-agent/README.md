@@ -221,7 +221,7 @@ report.zip
     "php":       "8.3.12",
     "php_sapi":  "fpm-fcgi",
     "server":    "Apache/2.4.62",
-    "plugin":    "1.1.0",
+    "plugin":    "1.1.1",
     "disk": {
       "available":    true,
       "path":         "/var/www/html",
