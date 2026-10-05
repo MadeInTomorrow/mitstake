@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.1.1
+ * Version:     1.1.2
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -61,9 +61,12 @@ if (is_admin()) {
     add_action('admin_menu',    [MiTstakeAgent::class, 'addSettingsPage']);
     add_action('admin_init',    [MiTstakeAgent::class, 'registerSettings']);
     add_action('admin_notices', [MiTstakeAgent::class, 'adminNotices']);
-    // Aggiornamenti automatici tramite GitHub releases (Update URI header, WP 5.8+)
-    add_filter('update_plugins_github.com', [MiTstakeAgent::class, 'checkForUpdates'], 10, 3);
 }
+
+// Aggiornamenti automatici tramite GitHub releases (Update URI header, WP 5.8+).
+// Registrato FUORI da is_admin(): il check periodico di WP gira via wp-cron,
+// dove is_admin() è false — altrimenti l'aggiornamento non verrebbe mai rilevato.
+add_filter('update_plugins_github.com', [MiTstakeAgent::class, 'checkForUpdates'], 10, 3);
 
 // Pulizia cron alla disattivazione (sempre registrata, anche se config incompleta)
 register_deactivation_hook(__FILE__, [MiTstakeAgent::class, 'deactivate']);
