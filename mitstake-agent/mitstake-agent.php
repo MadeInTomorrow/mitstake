@@ -30,6 +30,8 @@ if (isset($_eha['cooldown']))          define('EHA_COOLDOWN',         (int) $_eh
 if (isset($_eha['max_log_lines']))     define('EHA_MAX_LOG_LINES',    (int) $_eha['max_log_lines']);
 if (isset($_eha['max_source_files'])) define('EHA_MAX_SOURCE_FILES', (int) $_eha['max_source_files']);
 if (isset($_eha['send_wp_user']))      define('EHA_SEND_WP_USER',     $_eha['send_wp_user'] === '1');
+if (isset($_eha['disk_heartbeat']))          define('EHA_DISK_HEARTBEAT',          $_eha['disk_heartbeat'] === '1');
+if (isset($_eha['disk_heartbeat_interval'])) define('EHA_DISK_HEARTBEAT_INTERVAL', (int) $_eha['disk_heartbeat_interval']);
 unset($_eha);
 
 // 2. config.php come fallback (usa defined() || define(), non sovrascrive le WP options)
@@ -48,6 +50,9 @@ defined('EHA_CURL_TIMEOUT')    || define('EHA_CURL_TIMEOUT',    30);
 defined('EHA_MAX_ZIP_BYTES')   || define('EHA_MAX_ZIP_BYTES',   20 * 1024 * 1024);
 // M-1: default false — non inviare dati identificativi dell'utente WP senza consenso esplicito.
 defined('EHA_SEND_WP_USER')    || define('EHA_SEND_WP_USER',    false);
+// Heartbeat disco: invio periodico dello stato disco all'hub (indipendente dagli errori)
+defined('EHA_DISK_HEARTBEAT')          || define('EHA_DISK_HEARTBEAT',          true);
+defined('EHA_DISK_HEARTBEAT_INTERVAL') || define('EHA_DISK_HEARTBEAT_INTERVAL', 60); // minuti
 
 // ---------------------------------------------------------------------------
 // Pagina impostazioni admin — registrata SEMPRE, anche se la config è incompleta
@@ -59,6 +64,9 @@ if (is_admin()) {
     // Aggiornamenti automatici tramite GitHub releases (Update URI header, WP 5.8+)
     add_filter('update_plugins_github.com', [MiTstakeAgent::class, 'checkForUpdates'], 10, 3);
 }
+
+// Pulizia cron alla disattivazione (sempre registrata, anche se config incompleta)
+register_deactivation_hook(__FILE__, [MiTstakeAgent::class, 'deactivate']);
 
 // ---------------------------------------------------------------------------
 // Validazione configurazione a startup
@@ -80,6 +88,13 @@ if (stripos(EHA_HUB_URL, 'https://') !== 0) {
 // ---------------------------------------------------------------------------
 register_shutdown_function([MiTstakeAgent::class, 'onShutdown']);
 set_exception_handler([MiTstakeAgent::class, 'onException']);
+
+// Heartbeat disco: invio periodico indipendente dagli errori (WP-Cron)
+if (EHA_DISK_HEARTBEAT) {
+    add_filter('cron_schedules', [MiTstakeAgent::class, 'addCronSchedules']);
+    add_action('eha_disk_heartbeat', [MiTstakeAgent::class, 'sendDiskHeartbeat']);
+    add_action('init', [MiTstakeAgent::class, 'scheduleDiskHeartbeat']);
+}
 
 /**
  * Classe principale del plugin.
@@ -220,6 +235,103 @@ class MiTstakeAgent
     }
 
     // -----------------------------------------------------------------------
+    // Recupera la versione di WordPress (con fallback pre-init)
+    // -----------------------------------------------------------------------
+    private static function getWpVersion(): string
+    {
+        if (function_exists('get_bloginfo')) {
+            $version = get_bloginfo('version');
+            if ($version) {
+                return $version;
+            }
+        }
+        // Fallback: legge $wp_version da wp-includes/version.php
+        // (funziona anche se l'errore avviene prima dell'init di WP)
+        $file = defined('ABSPATH') ? ABSPATH . 'wp-includes/version.php' : '';
+        if ($file && is_readable($file)) {
+            $content = (string) file_get_contents($file);
+            if (preg_match('/\$wp_version\s*=\s*\'([^\']+)\'/', $content, $m)) {
+                return $m[1];
+            }
+        }
+        return '';
+    }
+
+    // -----------------------------------------------------------------------
+    // Recupera la versione del plugin dall'header (senza hardcodarla)
+    // -----------------------------------------------------------------------
+    private static function getPluginVersion(): string
+    {
+        if (function_exists('get_file_data')) {
+            $data = get_file_data(__FILE__, ['Version' => 'Version']);
+            if (!empty($data['Version'])) {
+                return $data['Version'];
+            }
+        }
+        return '';
+    }
+
+    // -----------------------------------------------------------------------
+    // Raccoglie le informazioni sull'ambiente (WordPress / PHP / server / disco)
+    // -----------------------------------------------------------------------
+    private static function getEnvironment(): array
+    {
+        return [
+            'wordpress' => self::getWpVersion(),
+            'php'       => PHP_VERSION,
+            'php_sapi'  => PHP_SAPI,
+            'server'    => sanitize_text_field($_SERVER['SERVER_SOFTWARE'] ?? ''),
+            'plugin'    => self::getPluginVersion(),
+            'disk'      => self::getDiskInfo(),
+        ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Raccoglie informazioni sullo spazio disco del filesystem
+    // -----------------------------------------------------------------------
+    private static function getDiskInfo(): array
+    {
+        // Directory valida: la webroot se disponibile, altrimenti la cartella del plugin
+        $path  = defined('ABSPATH') && is_dir(ABSPATH) ? ABSPATH : __DIR__;
+        $total = @disk_total_space($path);
+        $free  = @disk_free_space($path);
+
+        if ($total === false || $free === false) {
+            return ['available' => false];
+        }
+
+        $used = $total - $free;
+        $pct  = $total > 0 ? round(($used / $total) * 100, 2) : 0.0;
+
+        return [
+            'available'    => true,
+            'path'         => $path,
+            'total'        => $total,
+            'free'         => $free,
+            'used'         => $used,
+            'used_percent' => $pct,
+            'total_human'  => self::formatBytes($total),
+            'free_human'   => self::formatBytes($free),
+            'used_human'   => self::formatBytes($used),
+        ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Formatta un valore in byte in formato leggibile (B, KB, MB, …)
+    // -----------------------------------------------------------------------
+    private static function formatBytes(int|float $bytes, int $precision = 2): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        $value = max(0, (float) $bytes);
+        $i     = 0;
+        while ($value >= 1024 && $i < count($units) - 1) {
+            $value /= 1024;
+            $i++;
+        }
+        return round($value, $precision) . ' ' . $units[$i];
+    }
+
+    // -----------------------------------------------------------------------
     // Costruisce lo ZIP in memoria
     // -----------------------------------------------------------------------
     private static function buildZip(
@@ -248,17 +360,41 @@ class MiTstakeAgent
 
         $ts = gmdate('Y-m-d\TH:i:s\Z');
 
+        // ── Ambiente (WordPress / PHP / server / disco) ─────────────────
+        $env = self::getEnvironment();
+
         // ── report.json ──────────────────────────────────────────────────
         $reportJson = json_encode([
-            'site_id'   => EHA_SITE_ID,
-            'timestamp' => $ts,
-            'log_line'  => self::buildLogLine($message),
-            'method'    => sanitize_text_field($_SERVER['REQUEST_METHOD'] ?? ''),
-            'path'      => self::redactUri(sanitize_text_field($_SERVER['REQUEST_URI'] ?? '')),
-            'ip'        => sanitize_text_field($_SERVER['REMOTE_ADDR']    ?? ''),
-            'useragent' => sanitize_text_field($_SERVER['HTTP_USER_AGENT'] ?? ''),
+            'site_id'     => EHA_SITE_ID,
+            'timestamp'   => $ts,
+            'log_line'    => self::buildLogLine($message),
+            'method'      => sanitize_text_field($_SERVER['REQUEST_METHOD'] ?? ''),
+            'path'        => self::redactUri(sanitize_text_field($_SERVER['REQUEST_URI'] ?? '')),
+            'ip'          => sanitize_text_field($_SERVER['REMOTE_ADDR']    ?? ''),
+            'useragent'   => sanitize_text_field($_SERVER['HTTP_USER_AGENT'] ?? ''),
+            'environment' => $env,
         ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         $zip->addFromString('report.json', $reportJson);
+
+        // ── Ambiente (WordPress / PHP / server / disco) ─────────────────
+        $envLines = [
+            'WordPress: '       . $env['wordpress'],
+            'PHP: '             . $env['php'],
+            'PHP SAPI: '        . $env['php_sapi'],
+            'Server software: ' . $env['server'],
+            'MiTstake Agent: '  . $env['plugin'],
+        ];
+        $disk = $env['disk'] ?? ['available' => false];
+        if (!empty($disk['available'])) {
+            $envLines[] = 'Disk path: '   . $disk['path'];
+            $envLines[] = 'Disk total: '  . $disk['total_human'] . ' (' . (int) $disk['total'] . ' bytes)';
+            $envLines[] = 'Disk used: '   . $disk['used_human']  . ' (' . (int) $disk['used']  . ' bytes)';
+            $envLines[] = 'Disk free: '   . $disk['free_human']  . ' (' . (int) $disk['free']  . ' bytes)';
+            $envLines[] = 'Disk used %: ' . $disk['used_percent'] . '%';
+        } else {
+            $envLines[] = 'Disk: [non disponibile]';
+        }
+        $zip->addFromString('logs/environment.txt', implode("\n", $envLines));
 
         // ── PHP error log ─────────────────────────────────────────────────
         $phpErrorLogPath = ini_get('error_log');
@@ -504,14 +640,26 @@ class MiTstakeAgent
         $ts = gmdate('Y-m-d\TH:i:s\Z');
         $ip = sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? '');
 
-        $parts  = '';
+        $parts = '';
+        $disk  = self::getDiskInfo();
         $fields = [
-            'log_line'        => substr($logLine, 0, 2048),
-            'error_timestamp' => $ts,
-            'ip'              => $ip,
-            'method'          => sanitize_text_field($_SERVER['REQUEST_METHOD'] ?? ''),
-            'path'            => self::redactUri(sanitize_text_field($_SERVER['REQUEST_URI'] ?? '')),
-            'useragent'       => sanitize_text_field($_SERVER['HTTP_USER_AGENT'] ?? ''),
+            'log_line'          => substr($logLine, 0, 2048),
+            'error_timestamp'   => $ts,
+            'ip'                => $ip,
+            'method'            => sanitize_text_field($_SERVER['REQUEST_METHOD'] ?? ''),
+            'path'              => self::redactUri(sanitize_text_field($_SERVER['REQUEST_URI'] ?? '')),
+            'useragent'         => sanitize_text_field($_SERVER['HTTP_USER_AGENT'] ?? ''),
+            'wp_version'        => self::getWpVersion(),
+            'php_version'       => PHP_VERSION,
+            'disk_available'    => !empty($disk['available']) ? '1' : '0',
+            'disk_path'         => $disk['path'] ?? '',
+            'disk_total'        => isset($disk['total']) ? (string) (int) $disk['total'] : '',
+            'disk_used'         => isset($disk['used'])  ? (string) (int) $disk['used']  : '',
+            'disk_free'         => isset($disk['free'])  ? (string) (int) $disk['free']  : '',
+            'disk_used_percent' => isset($disk['used_percent']) ? (string) $disk['used_percent'] : '',
+            'disk_total_human'  => $disk['total_human'] ?? '',
+            'disk_used_human'   => $disk['used_human'] ?? '',
+            'disk_free_human'   => $disk['free_human'] ?? '',
         ];
 
         foreach ($fields as $name => $value) {
@@ -528,6 +676,103 @@ class MiTstakeAgent
         $parts .= "--{$boundary}--\r\n";
 
         return $parts;
+    }
+
+    // -----------------------------------------------------------------------
+    // Heartbeat disco: invio periodico dello stato disco (WP-Cron)
+    // -----------------------------------------------------------------------
+    public static function addCronSchedules(array $schedules): array
+    {
+        $minutes = max(5, (int) EHA_DISK_HEARTBEAT_INTERVAL);
+        $schedules['eha_disk_heartbeat'] = [
+            'interval' => $minutes * 60,
+            'display'  => sprintf('Ogni %d minuti (MiTstake disco)', $minutes),
+        ];
+        return $schedules;
+    }
+
+    public static function scheduleDiskHeartbeat(): void
+    {
+        if (!EHA_DISK_HEARTBEAT) {
+            wp_clear_scheduled_hook('eha_disk_heartbeat');
+            return;
+        }
+        if (!wp_next_scheduled('eha_disk_heartbeat')) {
+            wp_schedule_event(time() + 60, 'eha_disk_heartbeat', 'eha_disk_heartbeat');
+        }
+    }
+
+    public static function sendDiskHeartbeat(): void
+    {
+        if (empty(EHA_SITE_ID) || empty(EHA_HUB_URL) || empty(EHA_API_KEY)) {
+            return;
+        }
+
+        $disk    = self::getDiskInfo();
+        $payload = [
+            'disk_available'    => !empty($disk['available']) ? '1' : '0',
+            'disk_path'         => $disk['path'] ?? '',
+            'disk_total'        => isset($disk['total']) ? (string) (int) $disk['total'] : '',
+            'disk_used'         => isset($disk['used'])  ? (string) (int) $disk['used']  : '',
+            'disk_free'         => isset($disk['free'])  ? (string) (int) $disk['free']  : '',
+            'disk_used_percent' => isset($disk['used_percent']) ? (string) $disk['used_percent'] : '',
+            'disk_total_human'  => $disk['total_human'] ?? '',
+            'disk_used_human'   => $disk['used_human'] ?? '',
+            'disk_free_human'   => $disk['free_human'] ?? '',
+        ];
+
+        if (!function_exists('wp_remote_post')) {
+            self::sendDiskHeartbeatViaCurl($payload);
+            return;
+        }
+
+        $response = wp_remote_post(EHA_HUB_URL . '/api/v1/disk', [
+            'headers'   => [
+                'Authorization' => 'Bearer ' . EHA_API_KEY,
+                'Content-Type'  => 'application/json',
+            ],
+            'body'      => json_encode($payload),
+            'timeout'   => EHA_CURL_TIMEOUT,
+            'sslverify' => true,
+            'blocking'  => true,
+        ]);
+
+        if (is_wp_error($response)) {
+            error_log('[MiTstakeAgent] Heartbeat disco fallito: ' . $response->get_error_message());
+            return;
+        }
+        $code = wp_remote_retrieve_response_code($response);
+        if ($code !== 200 && $code !== 201 && $code !== 202) {
+            error_log('[MiTstakeAgent] Heartbeat disco: hub ha risposto HTTP ' . $code);
+        }
+    }
+
+    private static function sendDiskHeartbeatViaCurl(array $payload): void
+    {
+        if (!function_exists('curl_init')) {
+            error_log('[MiTstakeAgent] cURL non disponibile per heartbeat disco.');
+            return;
+        }
+        $ch = curl_init(EHA_HUB_URL . '/api/v1/disk');
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => json_encode($payload),
+            CURLOPT_HTTPHEADER     => [
+                'Authorization: Bearer ' . EHA_API_KEY,
+                'Content-Type: application/json',
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => EHA_CURL_TIMEOUT,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+        ]);
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    public static function deactivate(): void
+    {
+        wp_clear_scheduled_hook('eha_disk_heartbeat');
     }
 
     // -----------------------------------------------------------------------
@@ -692,6 +937,8 @@ class MiTstakeAgent
             ['max_log_lines',    'Max righe log',     'number',   'eha_advanced', 'Quante righe finali leggere dai file di log contestuali (default: 100).'],
             ['max_source_files', 'Max file sorgente', 'number',   'eha_advanced', 'Numero massimo di file PHP inclusi nello ZIP (default: 10).'],
             ['send_wp_user',     'Dati utente WP',    'checkbox', 'eha_advanced', 'Includi nel report username e ruolo dell\'utente WP loggato. Off di default (GDPR).'],
+            ['disk_heartbeat',          'Heartbeat disco',           'checkbox', 'eha_advanced', 'Invia periodicamente lo stato del disco all\'hub anche senza errori (WP-Cron).'],
+            ['disk_heartbeat_interval', 'Intervallo heartbeat (min)', 'number',  'eha_advanced', 'Ogni quanti minuti inviare lo stato disco (min 5, default 60).'],
         ];
 
         foreach (array_merge($main_fields, $advanced_fields) as [$id, $label, $type, $section, $desc]) {
@@ -715,10 +962,16 @@ class MiTstakeAgent
         $value = (string) ($opts[$id] ?? '');
 
         if ($type === 'checkbox') {
+            $checkedVal = $value;
+            // Il default effettivo dell'heartbeat disco è "attivo": mostra il flag
+            // selezionato finché l'utente non salva esplicitamente una scelta.
+            if ($id === 'disk_heartbeat' && $value === '') {
+                $checkedVal = EHA_DISK_HEARTBEAT ? '1' : '0';
+            }
             printf(
                 '<label><input type="checkbox" name="eha_settings[%s]" value="1"%s> %s</label>',
                 $id,
-                checked($value, '1', false),
+                checked($checkedVal, '1', false),
                 $desc
             );
         } elseif ($type === 'api_key') {
@@ -786,6 +1039,8 @@ class MiTstakeAgent
         $clean['max_log_lines']    = max(10,  min(1000, (int) ($input['max_log_lines']    ?? 100)));
         $clean['max_source_files'] = max(1,   min(50,   (int) ($input['max_source_files'] ?? 10)));
         $clean['send_wp_user']     = !empty($input['send_wp_user']) ? '1' : '0';
+        $clean['disk_heartbeat']          = !empty($input['disk_heartbeat']) ? '1' : '0';
+        $clean['disk_heartbeat_interval'] = max(5, min(10080, (int) ($input['disk_heartbeat_interval'] ?? 60)));
 
         return $clean;
     }

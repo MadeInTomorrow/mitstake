@@ -199,7 +199,8 @@ report.zip
 │   ├── php_error.log    ← ultime EHA_MAX_LOG_LINES righe del log PHP
 │   ├── wp_debug.log     ← ultime EHA_MAX_LOG_LINES righe di WP_CONTENT_DIR/debug.log
 │   ├── stacktrace.txt   ← stack trace completo (o "fatal error" se non disponibile)
-│   └── request.txt      ← variabili $_SERVER rilevanti + dati utente WP (se abilitato)
+│   ├── request.txt      ← variabili $_SERVER rilevanti + dati utente WP (se abilitato)
+│   └── environment.txt  ← versioni WordPress, PHP, SAPI, server, plugin e spazio disco
 └── sources/
     └── …path/to/file.php  ← fino a EHA_MAX_SOURCE_FILES file PHP dallo stack trace
 ```
@@ -214,7 +215,25 @@ report.zip
   "method":    "GET|POST|…",
   "path":      "/path?param=[REDACTED]",
   "ip":        "1.2.3.4",
-  "useragent": "Mozilla/…"
+  "useragent": "Mozilla/…",
+  "environment": {
+    "wordpress": "6.7.2",
+    "php":       "8.3.12",
+    "php_sapi":  "fpm-fcgi",
+    "server":    "Apache/2.4.62",
+    "plugin":    "1.0.4",
+    "disk": {
+      "available":    true,
+      "path":         "/var/www/html",
+      "total":        20038273024,
+      "free":         12001231232,
+      "used":         8037041792,
+      "used_percent": 40.11,
+      "total_human":  "18.66 GB",
+      "free_human":   "11.18 GB",
+      "used_human":   "7.49 GB"
+    }
+  }
 }
 ```
 
@@ -241,6 +260,17 @@ Content-Type:  multipart/form-data; boundary=----EHABoundary<hex>
 | `method` | `string` | Metodo HTTP |
 | `path` | `string` | URI redacted |
 | `useragent` | `string` | User-Agent |
+| `wp_version` | `string` | Versione WordPress installata |
+| `php_version` | `string` | Versione PHP in esecuzione |
+| `disk_available` | `string` (`1`/`0`) | Spazio disco rilevato (1 = sì) |
+| `disk_path` | `string` | Path del filesystem ispezionato |
+| `disk_total` | `string` (bytes) | Spazio disco totale |
+| `disk_used` | `string` (bytes) | Spazio disco usato |
+| `disk_free` | `string` (bytes) | Spazio disco libero |
+| `disk_used_percent` | `string` | Percentuale usata (es. `40.11`) |
+| `disk_total_human` | `string` | Totale leggibile (es. `18.66 GB`) |
+| `disk_used_human` | `string` | Usato leggibile (es. `7.49 GB`) |
+| `disk_free_human` | `string` | Libero leggibile (es. `11.18 GB`) |
 | `report_zip` | `file` (`application/zip`) | Pacchetto dati completo |
 
 **Risposte attese:** `200` o `201` = successo. Qualsiasi altro codice

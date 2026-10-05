@@ -30,3 +30,9 @@ define('EHA_MAX_SOURCE_FILES', 10);
 
 // Timeout cURL in secondi
 define('EHA_CURL_TIMEOUT', 30);
+
+// Invio periodico dello stato disco all'hub anche senza errori (true/false)
+define('EHA_DISK_HEARTBEAT', true);
+
+// Intervallo in minuti tra un heartbeat disco e il successivo (min 5)
+define('EHA_DISK_HEARTBEAT_INTERVAL', 60);

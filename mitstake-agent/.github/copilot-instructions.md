@@ -44,6 +44,8 @@ rompe la compatibilità con i file `config.php` già distribuiti.
 | `EHA_CURL_TIMEOUT` | `30` | Timeout HTTP in secondi |
 | `EHA_MAX_ZIP_BYTES` | `20971520` | 20 MB massimo per ZIP |
 | `EHA_SEND_WP_USER` | `false` | Default off per GDPR |
+| `EHA_DISK_HEARTBEAT` | `true` | Invia periodicamente lo stato disco (WP-Cron) |
+| `EHA_DISK_HEARTBEAT_INTERVAL` | `60` | Minuti tra heartbeat disco consecutivi, min 5 |
 
 **Ordine di priorità caricamento**: `wp_options` → `config.php` → default hardcoded.
 Il primo `define()` vince. Non usare `define()` per sovrascrivere costanti già definite.
@@ -157,9 +159,44 @@ Campi form-data attesi dall'hub:
 | `method` | string | — |
 | `path` | string (redacted) | — |
 | `useragent` | string | — |
+| `disk_available` | string (`1`/`0`) | — |
+| `disk_path` | string | — |
+| `disk_total` | string (bytes) | — |
+| `disk_used` | string (bytes) | — |
+| `disk_free` | string (bytes) | — |
+| `disk_used_percent` | string | — |
+| `disk_total_human` | string | — |
+| `disk_used_human` | string | — |
+| `disk_free_human` | string | — |
 | `report_zip` | file (application/zip) | `EHA_MAX_ZIP_BYTES` |
 
 Risposta attesa: `200` o `201`. Qualsiasi altro codice → `error_log` del sito.
+
+### Endpoint heartbeat disco
+
+```
+POST {EHA_HUB_URL}/api/v1/disk
+Authorization: Bearer {EHA_API_KEY}
+Content-Type: application/json
+```
+
+Body JSON (stessi nomi chiave dei campi `disk_*`):
+
+```json
+{
+  "disk_available":    "1",
+  "disk_path":         "/var/www/html",
+  "disk_total":        "20038273024",
+  "disk_used":         "8037041792",
+  "disk_free":         "12001231232",
+  "disk_used_percent": "40.11",
+  "disk_total_human":  "18.66 GB",
+  "disk_used_human":   "7.49 GB",
+  "disk_free_human":   "11.18 GB"
+}
+```
+
+Risposta attesa: `202`. Invocato da `MiTstakeAgent::sendDiskHeartbeat()` via WP-Cron.
 
 ---
 
@@ -186,7 +223,25 @@ Schema `report.json`:
   "method":    "GET",
   "path":      "/path?token=[REDACTED]",
   "ip":        "1.2.3.4",
-  "useragent": "Mozilla/5.0 …"
+  "useragent": "Mozilla/5.0 …",
+  "environment": {
+    "wordpress": "6.7.2",
+    "php":       "8.3.12",
+    "php_sapi":  "fpm-fcgi",
+    "server":    "Apache/2.4",
+    "plugin":    "1.0.4",
+    "disk": {
+      "available":    true,
+      "path":         "/var/www/html",
+      "total":        20038273024,
+      "free":         12001231232,
+      "used":         8037041792,
+      "used_percent": 40.11,
+      "total_human":  "18.66 GB",
+      "free_human":   "11.18 GB",
+      "used_human":   "7.49 GB"
+    }
+  }
 }
 ```
 
