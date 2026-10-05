@@ -287,12 +287,20 @@ class MiTstakeAgent
     }
 
     // -----------------------------------------------------------------------
-    // Raccoglie informazioni sullo spazio disco del filesystem
+    // Raccoglie informazioni sullo spazio disco del filesystem o sulla quota
     // -----------------------------------------------------------------------
     private static function getDiskInfo(): array
     {
         // Directory valida: la webroot se disponibile, altrimenti la cartella del plugin
-        $path  = defined('ABSPATH') && is_dir(ABSPATH) ? ABSPATH : __DIR__;
+        $path = defined('ABSPATH') && is_dir(ABSPATH) ? ABSPATH : __DIR__;
+
+        // Su server con quota per-utente (es. Virtualmin, cPanel) lo spazio
+        // realmente disponibile è il limite di quota, non il disco fisico.
+        $quota = self::getQuotaInfo($path);
+        if ($quota !== null) {
+            return $quota;
+        }
+
         $total = @disk_total_space($path);
         $free  = @disk_free_space($path);
 
@@ -314,6 +322,119 @@ class MiTstakeAgent
             'free_human'   => self::formatBytes($free),
             'used_human'   => self::formatBytes($used),
         ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Rileva la quota disco dell'utente corrente (Virtualmin/cPanel).
+    // Restituisce l'array disk_* se trova una quota attiva, altrimenti null.
+    // -----------------------------------------------------------------------
+    private static function getQuotaInfo(string $path): ?array
+    {
+        // La quota è per-utente: serve l'utente con cui gira PHP. In Virtualmin
+        // ogni vhost gira con il proprio utente (php-fpm pool dedicato).
+        if (!function_exists('posix_getuid') || !function_exists('posix_getpwuid')) {
+            return null;
+        }
+        $uid = posix_getuid();
+        if ($uid === 0) {
+            return null; // root: nessuna quota significativa
+        }
+        $info = posix_getpwuid($uid);
+        $user = is_array($info) ? ($info['name'] ?? '') : '';
+        if ($user === '') {
+            return null;
+        }
+
+        if (!self::canExec()) {
+            return null;
+        }
+
+        $out = self::runCommand(['quota', '-u', $user, '-w']);
+        if ($out === null || trim($out) === '') {
+            return null;
+        }
+
+        // Output tipico di `quota -u user -w` (valori in blocchi da 1 KiB):
+        //   Disk quotas for user user (uid 1001):
+        //        Filesystem  blocks   quota   limit   grace   files   quota   limit   grace
+        //         /dev/sda1      999    5000    5500               123       0       0
+        $usedBytes  = null;
+        $limitBytes = null;
+        foreach (preg_split('/\r?\n/', $out) as $line) {
+            $line = trim($line);
+            if ($line === '' || strpos($line, 'Filesystem') === 0) {
+                continue;
+            }
+            if (strpos($line, 'Disk quotas for') === 0) {
+                continue;
+            }
+            $parts = preg_split('/\s+/', $line);
+            if (count($parts) < 4) {
+                continue;
+            }
+            if (!is_numeric($parts[1]) || !is_numeric($parts[2]) || !is_numeric($parts[3])) {
+                continue;
+            }
+            $blocks = (float) $parts[1];   // blocchi usati
+            $soft   = (float) $parts[2];   // soft quota
+            $hard   = (float) $parts[3];   // hard limit
+            $limit  = $hard > 0 ? $hard : ($soft > 0 ? $soft : 0);
+            if ($limit <= 0) {
+                continue; // nessuna quota attiva su questo filesystem
+            }
+            // Prima entry con quota attiva (il setup Virtualmin tipico ne ha una sola).
+            $usedBytes  = $blocks * 1024;
+            $limitBytes = $limit * 1024;
+            break;
+        }
+
+        if ($usedBytes === null || $limitBytes === null || $limitBytes <= 0) {
+            return null;
+        }
+
+        $free = max(0, $limitBytes - $usedBytes);
+        $pct  = round(($usedBytes / $limitBytes) * 100, 2);
+
+        return [
+            'available'    => true,
+            'path'         => $path,
+            'total'        => (int) $limitBytes,
+            'free'         => (int) $free,
+            'used'         => (int) $usedBytes,
+            'used_percent' => $pct,
+            'total_human'  => self::formatBytes($limitBytes),
+            'free_human'   => self::formatBytes($free),
+            'used_human'   => self::formatBytes($usedBytes),
+        ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Verifica che exec() sia disponibile e non disabilitato
+    // -----------------------------------------------------------------------
+    private static function canExec(): bool
+    {
+        static $allowed;
+        if ($allowed !== null) {
+            return $allowed;
+        }
+        $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+        $allowed  = function_exists('exec') && !in_array('exec', $disabled, true);
+        return $allowed;
+    }
+
+    // -----------------------------------------------------------------------
+    // Esegue un comando esterno in modo sicuro e restituisce l'output
+    // -----------------------------------------------------------------------
+    private static function runCommand(array $cmd): ?string
+    {
+        $cmdline = implode(' ', array_map('escapeshellarg', $cmd)) . ' 2>/dev/null';
+        $output  = [];
+        $rc      = 0;
+        @exec($cmdline, $output, $rc);
+        if ($rc !== 0) {
+            return null;
+        }
+        return implode("\n", $output);
     }
 
     // -----------------------------------------------------------------------
