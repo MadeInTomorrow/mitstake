@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.2.1
+ * Version:     1.2.2
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -293,6 +293,38 @@ class MiTstakeAgent
             'plugin'    => self::getPluginVersion(),
             'disk'      => self::getDiskInfo(),
         ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Raccoglie la lista dei plugin ATTIVI con versione installata e
+    // aggiornamento disponibile (per il dialog "Plugin" nella dashboard hub).
+    // -----------------------------------------------------------------------
+    private static function getActivePlugins(): array
+    {
+        if (!function_exists('get_plugins') || !function_exists('get_plugin_updates')) {
+            return [];
+        }
+
+        $all    = get_plugins();
+        $active = (array) get_option('active_plugins', []);
+        $updates = get_plugin_updates();
+
+        $out = [];
+        foreach ($active as $plugin_file) {
+            if (!isset($all[$plugin_file])) {
+                continue;
+            }
+            $data = $all[$plugin_file];
+            $update = $updates[$plugin_file] ?? null;
+            $out[] = [
+                'name'             => $data['Name'] ?? $plugin_file,
+                'slug'             => dirname($plugin_file) === '.' ? $plugin_file : dirname($plugin_file),
+                'version'          => $data['Version'] ?? '',
+                'update_available' => $update !== null,
+                'new_version'      => $update !== null ? ($update->new_version ?? '') : '',
+            ];
+        }
+        return $out;
     }
 
     // -----------------------------------------------------------------------
@@ -888,6 +920,7 @@ class MiTstakeAgent
             'wp_version'        => self::getWpVersion(),
             'php_version'       => PHP_VERSION,
             'plugin_version'    => self::getPluginVersion(),
+            'plugins'           => self::getActivePlugins(),
         ];
 
         if (!function_exists('wp_remote_post')) {
