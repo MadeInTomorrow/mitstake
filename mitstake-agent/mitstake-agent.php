@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.2.2
+ * Version:     1.2.3
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -301,6 +301,17 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     private static function getActivePlugins(): array
     {
+        // get_plugins() e get_plugin_updates() vivono in wp-admin/includes/*,
+        // che NON vengono caricati nel contesto WP-Cron (richiesta frontend/CLI).
+        // Li carichiamo esplicitamente, altrimenti function_exists() fallisce
+        // e l'heartbeat invierebbe sempre una lista vuota.
+        if (defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/plugin.php')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/update.php')) {
+            require_once ABSPATH . 'wp-admin/includes/update.php';
+        }
+
         if (!function_exists('get_plugins') || !function_exists('get_plugin_updates')) {
             return [];
         }
