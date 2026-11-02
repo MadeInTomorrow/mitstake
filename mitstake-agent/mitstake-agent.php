@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.1.2
+ * Version:     1.2.0
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -775,6 +775,7 @@ class MiTstakeAgent
             'useragent'         => sanitize_text_field($_SERVER['HTTP_USER_AGENT'] ?? ''),
             'wp_version'        => self::getWpVersion(),
             'php_version'       => PHP_VERSION,
+            'plugin_version'    => self::getPluginVersion(),
             'disk_available'    => !empty($disk['available']) ? '1' : '0',
             'disk_path'         => $disk['path'] ?? '',
             'disk_total'        => isset($disk['total']) ? (string) (int) $disk['total'] : '',
@@ -843,6 +844,9 @@ class MiTstakeAgent
             'disk_total_human'  => $disk['total_human'] ?? '',
             'disk_used_human'   => $disk['used_human'] ?? '',
             'disk_free_human'   => $disk['free_human'] ?? '',
+            'wp_version'        => self::getWpVersion(),
+            'php_version'       => PHP_VERSION,
+            'plugin_version'    => self::getPluginVersion(),
         ];
 
         if (!function_exists('wp_remote_post')) {
