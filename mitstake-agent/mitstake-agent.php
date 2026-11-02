@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.2.0
+ * Version:     1.2.1
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -93,11 +93,17 @@ register_shutdown_function([MiTstakeAgent::class, 'onShutdown']);
 set_exception_handler([MiTstakeAgent::class, 'onException']);
 
 // Heartbeat disco: invio periodico indipendente dagli errori (WP-Cron)
+// Lo schedule va registrato SEMPRE, così il salvataggio delle impostazioni
+// può ri-schedulare l'evento anche quando l'heartbeat viene riattivato.
+add_filter('cron_schedules', [MiTstakeAgent::class, 'addCronSchedules']);
+
 if (EHA_DISK_HEARTBEAT) {
-    add_filter('cron_schedules', [MiTstakeAgent::class, 'addCronSchedules']);
     add_action('eha_disk_heartbeat', [MiTstakeAgent::class, 'sendDiskHeartbeat']);
     add_action('init', [MiTstakeAgent::class, 'scheduleDiskHeartbeat']);
 }
+
+// Ri-schedulazione immediata al salvataggio delle impostazioni.
+add_action('update_option_eha_settings', [MiTstakeAgent::class, 'onSettingsSaved'], 10, 3);
 
 /**
  * Classe principale del plugin.
@@ -808,7 +814,16 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     public static function addCronSchedules(array $schedules): array
     {
+        // Legge l'intervallo corrente dal DB (con fallback alla costante),
+        // così il cambio di intervallo al salvataggio ha effetto immediato
+        // (la costante EHA_DISK_HEARTBEAT_INTERVAL è fissata al bootstrap).
         $minutes = max(5, (int) EHA_DISK_HEARTBEAT_INTERVAL);
+        if (function_exists('get_option')) {
+            $opts = (array) get_option('eha_settings', []);
+            if (isset($opts['disk_heartbeat_interval']) && (int) $opts['disk_heartbeat_interval'] > 0) {
+                $minutes = max(5, (int) $opts['disk_heartbeat_interval']);
+            }
+        }
         $schedules['eha_disk_heartbeat'] = [
             'interval' => $minutes * 60,
             'display'  => sprintf('Ogni %d minuti (MiTstake disco)', $minutes),
@@ -822,6 +837,32 @@ class MiTstakeAgent
             wp_clear_scheduled_hook('eha_disk_heartbeat');
             return;
         }
+        if (!wp_next_scheduled('eha_disk_heartbeat')) {
+            wp_schedule_event(time() + 60, 'eha_disk_heartbeat', 'eha_disk_heartbeat');
+        }
+    }
+
+    /**
+     * Chiamato dopo il salvataggio delle impostazioni: riallinea subito
+     * lo schedule dell'heartbeat al nuovo valore.
+     */
+    public static function onSettingsSaved($old_value, $value, $option = ''): void
+    {
+        self::rescheduleDiskHeartbeat(is_array($value) ? $value : []);
+    }
+
+    public static function rescheduleDiskHeartbeat(array $opts): void
+    {
+        if (!function_exists('wp_clear_scheduled_hook') || !function_exists('wp_next_scheduled')) {
+            return;
+        }
+
+        wp_clear_scheduled_hook('eha_disk_heartbeat');
+
+        if (empty($opts['disk_heartbeat'])) {
+            return;
+        }
+
         if (!wp_next_scheduled('eha_disk_heartbeat')) {
             wp_schedule_event(time() + 60, 'eha_disk_heartbeat', 'eha_disk_heartbeat');
         }
