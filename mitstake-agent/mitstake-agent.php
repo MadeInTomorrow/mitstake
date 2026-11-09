@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.2.3
+ * Version:     1.2.4
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -296,49 +296,6 @@ class MiTstakeAgent
     }
 
     // -----------------------------------------------------------------------
-    // Raccoglie la lista dei plugin ATTIVI con versione installata e
-    // aggiornamento disponibile (per il dialog "Plugin" nella dashboard hub).
-    // -----------------------------------------------------------------------
-    private static function getActivePlugins(): array
-    {
-        // get_plugins() e get_plugin_updates() vivono in wp-admin/includes/*,
-        // che NON vengono caricati nel contesto WP-Cron (richiesta frontend/CLI).
-        // Li carichiamo esplicitamente, altrimenti function_exists() fallisce
-        // e l'heartbeat invierebbe sempre una lista vuota.
-        if (defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/plugin.php')) {
-            require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        }
-        if (defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/update.php')) {
-            require_once ABSPATH . 'wp-admin/includes/update.php';
-        }
-
-        if (!function_exists('get_plugins') || !function_exists('get_plugin_updates')) {
-            return [];
-        }
-
-        $all    = get_plugins();
-        $active = (array) get_option('active_plugins', []);
-        $updates = get_plugin_updates();
-
-        $out = [];
-        foreach ($active as $plugin_file) {
-            if (!isset($all[$plugin_file])) {
-                continue;
-            }
-            $data = $all[$plugin_file];
-            $update = $updates[$plugin_file] ?? null;
-            $out[] = [
-                'name'             => $data['Name'] ?? $plugin_file,
-                'slug'             => dirname($plugin_file) === '.' ? $plugin_file : dirname($plugin_file),
-                'version'          => $data['Version'] ?? '',
-                'update_available' => $update !== null,
-                'new_version'      => $update !== null ? ($update->new_version ?? '') : '',
-            ];
-        }
-        return $out;
-    }
-
-    // -----------------------------------------------------------------------
     // Raccoglie informazioni sullo spazio disco del filesystem o sulla quota
     // -----------------------------------------------------------------------
     private static function getDiskInfo(): array
@@ -351,6 +308,16 @@ class MiTstakeAgent
         $quota = self::getQuotaInfo($path);
         if ($quota !== null) {
             return $quota;
+        }
+
+        // Su host multi-tenant con quota (Virtualmin/cPanel) il totale del disco
+        // fisico NON rappresenta lo spazio del singolo sito. Se la quota non è
+        // leggibile (es. PrivateDevices nasconde /dev/mapper/*) non ripieghiamo
+        // sul disco intero: segnaliamo "non disponibile" e l'hub disattiva gli
+        // alert per questo sito.
+        if (self::isQuotaManagedHost()) {
+            error_log('[MiTstakeAgent] Quota non rilevata su host multi-tenant: spazio disco non disponibile.');
+            return ['available' => false];
         }
 
         $total = @disk_total_space($path);
@@ -374,6 +341,15 @@ class MiTstakeAgent
             'free_human'   => self::formatBytes($free),
             'used_human'   => self::formatBytes($used),
         ];
+    }
+
+    // -----------------------------------------------------------------------
+    // True se il server è un host multi-tenant con quota per-utente
+    // (Virtualmin o cPanel). In quel caso il disco fisico NON è il dato giusto.
+    // -----------------------------------------------------------------------
+    private static function isQuotaManagedHost(): bool
+    {
+        return is_dir('/etc/virtualmin') || is_dir('/usr/local/cpanel');
     }
 
     // -----------------------------------------------------------------------
@@ -857,16 +833,7 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     public static function addCronSchedules(array $schedules): array
     {
-        // Legge l'intervallo corrente dal DB (con fallback alla costante),
-        // così il cambio di intervallo al salvataggio ha effetto immediato
-        // (la costante EHA_DISK_HEARTBEAT_INTERVAL è fissata al bootstrap).
         $minutes = max(5, (int) EHA_DISK_HEARTBEAT_INTERVAL);
-        if (function_exists('get_option')) {
-            $opts = (array) get_option('eha_settings', []);
-            if (isset($opts['disk_heartbeat_interval']) && (int) $opts['disk_heartbeat_interval'] > 0) {
-                $minutes = max(5, (int) $opts['disk_heartbeat_interval']);
-            }
-        }
         $schedules['eha_disk_heartbeat'] = [
             'interval' => $minutes * 60,
             'display'  => sprintf('Ogni %d minuti (MiTstake disco)', $minutes),
@@ -931,7 +898,6 @@ class MiTstakeAgent
             'wp_version'        => self::getWpVersion(),
             'php_version'       => PHP_VERSION,
             'plugin_version'    => self::getPluginVersion(),
-            'plugins'           => self::getActivePlugins(),
         ];
 
         if (!function_exists('wp_remote_post')) {
