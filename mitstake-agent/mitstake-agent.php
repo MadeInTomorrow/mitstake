@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.2.4
+ * Version:     1.2.5
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -293,6 +293,49 @@ class MiTstakeAgent
             'plugin'    => self::getPluginVersion(),
             'disk'      => self::getDiskInfo(),
         ];
+    }
+
+    // -----------------------------------------------------------------------
+    // Raccoglie la lista dei plugin ATTIVI con versione installata e
+    // aggiornamento disponibile (per il dialog "Plugin" nella dashboard hub).
+    // -----------------------------------------------------------------------
+    private static function getActivePlugins(): array
+    {
+        // get_plugins() e get_plugin_updates() vivono in wp-admin/includes/*,
+        // che NON vengono caricati nel contesto WP-Cron (richiesta frontend/CLI).
+        // Li carichiamo esplicitamente, altrimenti function_exists() fallisce
+        // e l'heartbeat invierebbe sempre una lista vuota.
+        if (defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/plugin.php')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (defined('ABSPATH') && is_readable(ABSPATH . 'wp-admin/includes/update.php')) {
+            require_once ABSPATH . 'wp-admin/includes/update.php';
+        }
+
+        if (!function_exists('get_plugins') || !function_exists('get_plugin_updates')) {
+            return [];
+        }
+
+        $all    = get_plugins();
+        $active = (array) get_option('active_plugins', []);
+        $updates = get_plugin_updates();
+
+        $out = [];
+        foreach ($active as $plugin_file) {
+            if (!isset($all[$plugin_file])) {
+                continue;
+            }
+            $data = $all[$plugin_file];
+            $update = $updates[$plugin_file] ?? null;
+            $out[] = [
+                'name'             => $data['Name'] ?? $plugin_file,
+                'slug'             => dirname($plugin_file) === '.' ? $plugin_file : dirname($plugin_file),
+                'version'          => $data['Version'] ?? '',
+                'update_available' => $update !== null,
+                'new_version'      => $update !== null ? ($update->new_version ?? '') : '',
+            ];
+        }
+        return $out;
     }
 
     // -----------------------------------------------------------------------
@@ -833,7 +876,16 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     public static function addCronSchedules(array $schedules): array
     {
+        // Legge l'intervallo corrente dal DB (con fallback alla costante),
+        // così il cambio di intervallo al salvataggio ha effetto immediato
+        // (la costante EHA_DISK_HEARTBEAT_INTERVAL è fissata al bootstrap).
         $minutes = max(5, (int) EHA_DISK_HEARTBEAT_INTERVAL);
+        if (function_exists('get_option')) {
+            $opts = (array) get_option('eha_settings', []);
+            if (isset($opts['disk_heartbeat_interval']) && (int) $opts['disk_heartbeat_interval'] > 0) {
+                $minutes = max(5, (int) $opts['disk_heartbeat_interval']);
+            }
+        }
         $schedules['eha_disk_heartbeat'] = [
             'interval' => $minutes * 60,
             'display'  => sprintf('Ogni %d minuti (MiTstake disco)', $minutes),
@@ -898,6 +950,7 @@ class MiTstakeAgent
             'wp_version'        => self::getWpVersion(),
             'php_version'       => PHP_VERSION,
             'plugin_version'    => self::getPluginVersion(),
+            'plugins'           => self::getActivePlugins(),
         ];
 
         if (!function_exists('wp_remote_post')) {
