@@ -3,7 +3,7 @@
  * Plugin Name: MiTstake Agent
  * Plugin URI:  https://github.com/MadeInTomorrow/mitstake
  * Description: Intercetta errori PHP/500 e invia report all'MiTstake centrale.
- * Version:     1.2.5
+ * Version:     1.2.6
  * Requires at least: 6.0
  * Requires PHP: 8.0
  * Author:      MiTstake
@@ -392,7 +392,9 @@ class MiTstakeAgent
     // -----------------------------------------------------------------------
     private static function isQuotaManagedHost(): bool
     {
-        return is_dir('/etc/virtualmin') || is_dir('/usr/local/cpanel');
+        return is_dir('/etc/webmin/virtual-server')
+            || is_file('/etc/virtualmin-license')
+            || is_dir('/usr/local/cpanel');
     }
 
     // -----------------------------------------------------------------------
